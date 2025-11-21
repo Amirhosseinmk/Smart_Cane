@@ -9,53 +9,56 @@
 
 Ultrasonic_measure_echo_cycles:
     push    {r1-r7, lr}
-    movs    r6, #0
-    movs    r4, #0
+    movs    r6, #0          @ best width
+    movs    r4, #0          @ sample counter
 
 UB_sample_loop:
     bl      UB_measure_once
-    movs    r5, r0
+    movs    r5, r0          @ this sample
+
     cmp     r4, #0
     bne     UB_compare_existing
-    movs    r6, r5
+    movs    r6, r5          @ first sample -> best
     b       UB_next_sample
 
 UB_compare_existing:
     cmp     r5, r6
     bls     UB_next_sample
-    movs    r6, r5
+    movs    r6, r5          @ keep larger width
 
 UB_next_sample:
     adds    r4, r4, #1
-    cmp     r4, #3
+    cmp     r4, #3          @ total 3 samples
     blt     UB_sample_loop
-    movs    r0, r6
+
+    movs    r0, r6          @ return best
     pop     {r1-r7, pc}
 
     .type   UB_measure_once, %function
 
 UB_measure_once:
     push    {r1-r7, lr}
-    ldr     r1, =0x400FF090
+
+    ldr     r1, =0x400FF090 @ GPIOC_PDIR address
     movs    r2, #1
-    lsls    r2, r2, #12
-    movs    r3, #0
-    movs    r0, #0
-    ldr     r4, =50000
-    ldr     r5, =200000
+    lsls    r2, r2, #12     @ mask for PTC12 (ECHO)
+    movs    r3, #0          @ timeout counter
+    movs    r0, #0          @ width counter
+    ldr     r4, =50000      @ timeout limit (wait for high)
+    ldr     r5, =200000     @ width guard (max pulse)
 
 UB_wait_for_high:
     ldr     r12, [r1]
     ands    r12, r12, r2
-    bne     UB_echo_high
+    bne     UB_echo_high    @ if high -> start measure
     adds    r3, r3, #1
     cmp     r3, r4
     blt     UB_wait_for_high
-    movs    r0, #0
+    movs    r0, #0          @ timeout -> return 0
     pop     {r1-r7, pc}
 
 UB_echo_high:
-    movs    r0, #0
+    movs    r0, #0          @ reset width
 
 UB_measure_width:
     ldr     r12, [r1]
@@ -79,72 +82,79 @@ UB_done_measure:
 
 Button_Handle_Asm:
     push    {r1-r7, lr}
-    movs    r4, r0
 
-UB_check_ext_flag:
+    movs    r4, r0              @ r4 = flags from PORTA->ISFR
+    ldr     r5, =0x400FF010     @ GPIOA_PDIR address
+    ldr     r6, [r5]            @ r6 = current logic level of all PTA pins
+
+    @ ============================
+    @ External button on PTA25
+    @ ============================
     movs    r1, #1
-    lsls    r1, r1, #25
+    lsls    r1, r1, #25         @ bit mask for PTA25
     tst     r4, r1
-    beq     UB_skip_ext
+    beq     UB_skip_ext         @ no flag -> skip
 
+    tst     r6, r1              @ check current level
+    beq     UB_ext_pressed      @ 0 -> LOW -> pressed
+
+    @ --- here: flag set && pin HIGH -> released ---
+    ldr     r2, =btn1_lock
+    movs    r3, #0
+    strb    r3, [r2]            @ clear lock
+    b       UB_skip_ext
+
+UB_ext_pressed:
     ldr     r2, =btn1_lock
     ldrb    r3, [r2]
     cmp     r3, #0
-    bne     UB_skip_ext
+    bne     UB_skip_ext         @ already locked -> ignore
     movs    r3, #1
-    strb    r3, [r2]
+    strb    r3, [r2]            @ set lock
 
     ldr     r2, =system_enabled
     ldrb    r3, [r2]
-    eors    r3, r3, #1
+    eors    r3, r3, #1          @ toggle 0<->1
     strb    r3, [r2]
 
 UB_skip_ext:
-    movs    r1, #1
-    lsls    r1, r1, #10
-    tst     r4, r1
-    beq     UB_skip_onb
 
+    @ ============================
+    @ On-board button on PTA10
+    @ ============================
+    movs    r1, #1
+    lsls    r1, r1, #10         @ bit mask for PTA10
+    tst     r4, r1
+    beq     UB_end_buttons      @ no flag -> done
+
+    tst     r6, r1
+    beq     UB_onb_pressed      @ 0 -> LOW -> pressed
+
+    @ --- here: flag set && pin HIGH -> released ---
+    ldr     r2, =btn2_lock
+    movs    r3, #0
+    strb    r3, [r2]            @ clear sensitivity button lock
+    b       UB_end_buttons
+
+UB_onb_pressed:
     ldr     r2, =btn2_lock
     ldrb    r3, [r2]
     cmp     r3, #0
-    bne     UB_skip_onb
+    bne     UB_end_buttons      @ already locked -> ignore
     movs    r3, #1
-    strb    r3, [r2]
+    strb    r3, [r2]            @ set lock
 
     ldr     r2, =sens_mode
     ldrb    r3, [r2]
-    adds    r3, r3, #1
+    adds    r3, r3, #1          @ next mode
     cmp     r3, #3
     blt     UB_no_wrap
-    movs    r3, #0
+    movs    r3, #0              @ wrap back to 0
 
 UB_no_wrap:
     strb    r3, [r2]
 
-UB_skip_onb:
-    ldr     r5, =0x400FF010
-    ldr     r6, [r5]
-
-UB_release_ext:
-    movs    r1, #1
-    lsls    r1, r1, #25
-    tst     r6, r1
-    beq     UB_no_rel_ext
-    ldr     r2, =btn1_lock
-    movs    r3, #0
-    strb    r3, [r2]
-
-UB_no_rel_ext:
-    movs    r1, #1
-    lsls    r1, r1, #10
-    tst     r6, r1
-    beq     UB_no_rel_onb
-    ldr     r2, =btn2_lock
-    movs    r3, #0
-    strb    r3, [r2]
-
-UB_no_rel_onb:
+UB_end_buttons:
     pop     {r1-r7, pc}
 
     .size Ultrasonic_measure_echo_cycles, .-Ultrasonic_measure_echo_cycles
