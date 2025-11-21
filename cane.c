@@ -120,15 +120,16 @@ static void Board_init(void)
     // LED PTC2
     LED_PORT->PCR[LED_PIN] = PORT_PCR_MUX(1);
 
-    // External button PTA25 (no internal pull, we use external 10k)
+    // External button PTA25 (falling AND rising edges)
     EXT_BTN_PORT->PCR[EXT_BTN_PIN] =
-        PORT_PCR_MUX(1) | PORT_PCR_IRQC(0xA);  // falling-edge interrupt
+        PORT_PCR_MUX(1) |
+        PORT_PCR_IRQC(0xB);      // 0xB = interrupt on either edge
 
-    // On-board button PTA10 (enable internal pull-up)
+    // On-board button PTA10 (internal pull-up + either edge)
     ONB_BTN_PORT->PCR[ONB_BTN_PIN] =
         PORT_PCR_MUX(1)               |
         PORT_PCR_PE_MASK | PORT_PCR_PS_MASK |  // pull enable + pull-up
-        PORT_PCR_IRQC(0xA);           // falling-edge interrupt
+        PORT_PCR_IRQC(0xB);           // either edge
 
     // TRIG PTC8
     TRIG_PORT->PCR[TRIG_PIN] = PORT_PCR_MUX(1);
@@ -169,9 +170,6 @@ static void Buttons_Int_Init(void)
 
 // =====================
 // PORTA IRQ handler
-// - Reads ISFR flags
-// - Clears them
-// - Calls ASM handler to update system_enabled and sens_mode
 // =====================
 void PORTA_IRQHandler(void)
 {
@@ -192,7 +190,6 @@ int main(void)
 
     while (1)
     {
-        // If system is OFF: keep everything quiet
         if (!system_enabled)
         {
             LED_off();
@@ -200,7 +197,6 @@ int main(void)
             continue;
         }
 
-        // System is ON: measure distance
         Ultrasonic_trigger();
         uint32_t echo_cycles = Ultrasonic_measure_echo_cycles();
         float distance_cm = Cycles_to_cm(echo_cycles);
@@ -209,8 +205,7 @@ int main(void)
 
         if (distance_cm > 0.0f && distance_cm < threshold)
         {
-            // Object closer than sensitivity threshold:
-            // fast blink + beep
+            // close: fast LED + buzzer
             LED_on();
             Buzzer_on();
             delay_ms(80);
@@ -221,8 +216,7 @@ int main(void)
         }
         else
         {
-            // No object or far object:
-            // slow LED blink, buzzer off
+            // far/timeout: slow LED, buzzer off
             LED_on();
             Buzzer_off();
             delay_ms(200);
@@ -230,6 +224,5 @@ int main(void)
             LED_off();
             delay_ms(200);
         }
-        // loop repeats
     }
 }
