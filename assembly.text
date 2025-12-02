@@ -1,4 +1,4 @@
-    .syntax unified
+.syntax unified
     .cpu cortex-m4
     .thumb
 
@@ -8,69 +8,77 @@
     .type   Ultrasonic_measure_echo_cycles, %function
 
 Ultrasonic_measure_echo_cycles:
-    push    {r1-r7, lr}
-    movs    r6, #0          @ best width
-    movs    r4, #0          @ sample counter
+    push    {r1-r7, lr}      @ Save existing registers so we don't mess up C code
+    movs    r6, #0           @ r6 = "High Score" holder (Best Echo Width). Start at 0.
+    movs    r4, #0           @ r4 = Loop Counter (We will count 0, 1, 2).
 
 UB_sample_loop:
-    bl      UB_measure_once
-    movs    r5, r0          @ this sample
+    bl      UB_measure_once  @ Call the helper function. Returns measurement in r0.
+    movs    r5, r0           @ Move the result to r5 so we can work with it.
 
-    cmp     r4, #0
-    bne     UB_compare_existing
-    movs    r6, r5          @ first sample -> best
-    b       UB_next_sample
+    @ --- Check: Is this the very first sample? ---
+    cmp     r4, #0           @ Check if Loop Counter is 0.
+    bne     UB_compare_existing @ If NOT 0 (it is sample 1 or 2), go compare.
+    movs    r6, r5           @ If IT IS 0 (first time), just save it as the Best.
+    b       UB_next_sample   @ Done with this loop.
 
 UB_compare_existing:
-    cmp     r5, r6
-    bls     UB_next_sample
-    movs    r6, r5          @ keep larger width
+    cmp     r5, r6           @ Compare Current Sample (r5) vs Best So Far (r6).
+    bls     UB_next_sample   @ If Current is Lower or Same, do nothing.
+    movs    r6, r5           @ If Current is Higher, update r6 (New High Score).
 
 UB_next_sample:
-    adds    r4, r4, #1
-    cmp     r4, #3          @ total 3 samples
-    blt     UB_sample_loop
+    adds    r4, r4, #1       @ Increment loop counter (0 -> 1 -> 2).
+    cmp     r4, #3           @ Have we done 3 samples?
+    blt     UB_sample_loop   @ If r4 < 3, jump back to top.
 
-    movs    r0, r6          @ return best
-    pop     {r1-r7, pc}
+    movs    r0, r6           @ Move the winner (Best Width) to r0 to return it.
+    pop     {r1-r7, pc}      @ Restore registers and return to C code.
 
     .type   UB_measure_once, %function
 
 UB_measure_once:
     push    {r1-r7, lr}
 
-    ldr     r1, =0x400FF090 @ GPIOC_PDIR address
-    movs    r2, #1
-    lsls    r2, r2, #12     @ mask for PTC12 (ECHO)
-    movs    r3, #0          @ timeout counter
-    movs    r0, #0          @ width counter
-    ldr     r4, =50000      @ timeout limit (wait for high)
-    ldr     r5, =200000     @ width guard (max pulse)
+    ldr     r1, =0x400FF090  @ Load address of Port C Input Register (PDIR).
+                             @ This gives us access to ALL 32 pins on Port C.
+    
+    @ --- Create the "Tool" (Mask) for Pin 12 ---
+    movs    r2, #1           @ Start with a single 1.
+    lsls    r2, r2, #12      @ Shift it left 12 times. Now r2 points ONLY to Pin 12.
+
+    movs    r3, #0           @ r3 = Timeout Counter (to prevent hanging).
+    movs    r0, #0           @ r0 = Width Counter (The actual measurement).
+    ldr     r4, =50000       @ Limit: How long to wait for Echo to start.
+    ldr     r5, =200000      @ Limit: Max distance to measure.
 
 UB_wait_for_high:
-    ldr     r12, [r1]
-    ands    r12, r12, r2
-    bne     UB_echo_high    @ if high -> start measure
-    adds    r3, r3, #1
-    cmp     r3, r4
-    blt     UB_wait_for_high
-    movs    r0, #0          @ timeout -> return 0
+    ldr     r12, [r1]        @ Read the "Exam Paper" (State of all Port C pins).
+    ands    r12, r12, r2     @ Apply the "Tool" (r2). Filter out everything except Pin 12.
+    bne     UB_echo_high     @ If Result != 0 (Pin is High), jump! Echo started.
+    
+    adds    r3, r3, #1       @ Increment timeout counter.
+    cmp     r3, r4           @ Did we wait too long?
+    blt     UB_wait_for_high @ If not, keep checking.
+    
+    movs    r0, #0           @ Timeout happened. Return 0.
     pop     {r1-r7, pc}
 
 UB_echo_high:
-    movs    r0, #0          @ reset width
+    movs    r0, #0           @ Reset Width Counter to 0. Ready to count.
 
 UB_measure_width:
-    ldr     r12, [r1]
-    ands    r12, r12, r2
-    beq     UB_done_measure
-    adds    r0, r0, #1
-    cmp     r0, r5
-    blt     UB_measure_width
+    ldr     r12, [r1]        @ Read Port C again.
+    ands    r12, r12, r2     @ Filter for Pin 12 again.
+    beq     UB_done_measure  @ If Result == 0 (Pin went Low), Echo finished! Done.
+    
+    adds    r0, r0, #1       @ Increment Width Counter (counting time).
+    cmp     r0, r5           @ Is object too far (max count reached)?
+    blt     UB_measure_width @ If not max, keep counting.
     b       UB_done_measure
 
 UB_done_measure:
-    pop     {r1-r7, pc}
+    pop     {r1-r7, pc}      @ Return the count in r0.
 
     .global Button_Handle_Asm
     .type   Button_Handle_Asm, %function
@@ -83,39 +91,44 @@ UB_done_measure:
 Button_Handle_Asm:
     push    {r1-r7, lr}
 
-    movs    r4, r0              @ r4 = flags from PORTA->ISFR
-    ldr     r5, =0x400FF010     @ GPIOA_PDIR address
-    ldr     r6, [r5]            @ r6 = current logic level of all PTA pins
+    movs    r4, r0           @ Get the "Notification" (Interrupt Flags) from C.
+    ldr     r5, =0x400FF010  @ Load GPIOA Input Address (PDIR).
+    ldr     r6, [r5]         @ Read the "Live Reality" (Current level of all Pins).
 
     @ ============================
     @ External button on PTA25
     @ ============================
     movs    r1, #1
-    lsls    r1, r1, #25         @ bit mask for PTA25
-    tst     r4, r1
-    beq     UB_skip_ext         @ no flag -> skip
+    lsls    r1, r1, #25      @ Create Mask (Tool) for Pin 25.
+    
+    @ --- Check 1: The Notification (Did this pin cause the interrupt?) ---
+    tst     r4, r1           @ Check if Pin 25 flag is set in r4.
+    beq     UB_skip_ext      @ If 0 (No), skip this button.
 
-    tst     r6, r1              @ check current level
-    beq     UB_ext_pressed      @ 0 -> LOW -> pressed
+    @ --- Check 2: The Reality (Is it pressed right now?) ---
+    tst     r6, r1           @ Check live pin level in r6.
+    beq     UB_ext_pressed   @ If 0 (LOW), it is Pressed. Go do action.
 
-    @ --- here: flag set && pin HIGH -> released ---
-    ldr     r2, =btn1_lock
+    @ --- Released Logic (Flag is set, but Pin is HIGH) ---
+    ldr     r2, =btn1_lock   @ Load lock variable address.
     movs    r3, #0
-    strb    r3, [r2]            @ clear lock
-    b       UB_skip_ext
+    strb    r3, [r2]         @ Clear the lock (Unlock).
+    b       UB_skip_ext      @ Done with this button.
 
 UB_ext_pressed:
     ldr     r2, =btn1_lock
-    ldrb    r3, [r2]
+    ldrb    r3, [r2]         @ Check if button is already locked.
     cmp     r3, #0
-    bne     UB_skip_ext         @ already locked -> ignore
+    bne     UB_skip_ext      @ If Locked (not 0), ignore this press.
+    
     movs    r3, #1
-    strb    r3, [r2]            @ set lock
+    strb    r3, [r2]         @ Set Lock = 1.
 
+    @ Toggle Power (0 -> 1 or 1 -> 0)
     ldr     r2, =system_enabled
     ldrb    r3, [r2]
-    eors    r3, r3, #1          @ toggle 0<->1
-    strb    r3, [r2]
+    eors    r3, r3, #1       @ XOR with 1 toggles the value.
+    strb    r3, [r2]         @ Save it back.
 
 UB_skip_ext:
 
@@ -123,36 +136,41 @@ UB_skip_ext:
     @ On-board button on PTA10
     @ ============================
     movs    r1, #1
-    lsls    r1, r1, #10         @ bit mask for PTA10
+    lsls    r1, r1, #10      @ Create Mask (Tool) for Pin 10.
+    
+    @ --- Check 1: The Notification ---
     tst     r4, r1
-    beq     UB_end_buttons      @ no flag -> done
+    beq     UB_end_buttons   @ If not this button, we are done.
 
+    @ --- Check 2: The Reality ---
     tst     r6, r1
-    beq     UB_onb_pressed      @ 0 -> LOW -> pressed
+    beq     UB_onb_pressed   @ If 0 (LOW), it is Pressed.
 
-    @ --- here: flag set && pin HIGH -> released ---
+    @ --- Released Logic ---
     ldr     r2, =btn2_lock
     movs    r3, #0
-    strb    r3, [r2]            @ clear sensitivity button lock
+    strb    r3, [r2]         @ Clear lock.
     b       UB_end_buttons
 
 UB_onb_pressed:
     ldr     r2, =btn2_lock
     ldrb    r3, [r2]
     cmp     r3, #0
-    bne     UB_end_buttons      @ already locked -> ignore
+    bne     UB_end_buttons   @ If Locked, ignore.
+    
     movs    r3, #1
-    strb    r3, [r2]            @ set lock
+    strb    r3, [r2]         @ Set Lock.
 
+    @ Cycle Sensitivity Mode (0 -> 1 -> 2 -> 0)
     ldr     r2, =sens_mode
     ldrb    r3, [r2]
-    adds    r3, r3, #1          @ next mode
-    cmp     r3, #3
-    blt     UB_no_wrap
-    movs    r3, #0              @ wrap back to 0
+    adds    r3, r3, #1       @ Add 1.
+    cmp     r3, #3           @ Is it 3?
+    blt     UB_no_wrap       @ If Less Than 3, we are good.
+    movs    r3, #0           @ If it IS 3, wrap back to 0.
 
 UB_no_wrap:
-    strb    r3, [r2]
+    strb    r3, [r2]         @ Save new mode.
 
 UB_end_buttons:
     pop     {r1-r7, pc}
